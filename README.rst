@@ -27,6 +27,10 @@ situation, at which time pages in the pool are released back to the system,
 unlike the carveout heap.
 
 
+   The latest version of CPA (and its associated tests) should be integrated
+   into a 3.18 Linux Kernel which contains ION. Porting might be required
+   for other Linux Kernel versions.
+
 
 .. Add blank line before section header
 |
@@ -438,3 +442,317 @@ above, are exemplified by the following commits for Juno:
 
 
 
+
+
+.. Add blank line before section header
+|
+
+CPA logging system
+==================
+
+CPA is also able to show its current working state through the ION heap
+``debug_show`` interface. This can be accessed by mounting debugfs
+(*/sys/kernel/debug*, for example) and reading
+*/sys/kernel/debug/ion/heaps/ion_compound_page*. This file contains
+performance data and module working state.
+
+The CPA logging system can be enabled via configuring
+``CONFIG_ION_COMPOUND_PAGE_STATS`` in kernel.
+
+Performance data and state, from sys file ``ion_compound_page``, will be
+shown in the following format:
+
+.. code-block:: none
+
+    root@juno:/ # cat /sys/kernel/debug/ion/heaps/compound_page
+              client              pid             size
+    ----------------------------------------------------
+    ----------------------------------------------------
+    orphaned allocations (info is from last known client):
+    ----------------------------------------------------
+      total orphaned                0
+              total                 0
+    ----------------------------------------------------
+    Free pool:
+      0 times depleted
+      0 page(s) in pool - 0 B (0)
+      0 partial(s) in use
+      Unused in partials - 0 B (0)
+      Partial bitmaps:
+    Shrink info:
+      Shrunk performed 0 time(s)
+      0 page(s) shrunk in total
+    Usage stats:
+      Max time spent to perform an allocation: 42452220 ns
+      Max time spent to allocate a single page from kernel: 32746920 ns
+      Soft alloc failures: 0
+      Hard alloc failures: 194
+      Allocations:
+        Total number of allocs seen: 1429
+        Live allocations: 0
+        Accumulated bytes requested: 2.84 GiB (3058683904)
+        Accumulated bytes committed: 2.84 GiB (3058683904)
+        Live bytes requested: 0 B (0)
+        Live bytes committed: 0 B (0)
+      Distribution:
+      0 page(s):
+        Total number of allocs seen: 3
+        Live allocations: 0
+        Accumulated bytes requested: 2.98 MiB (3133440)
+        Accumulated bytes committed: 2.98 MiB (3133440)
+        Live bytes requested: 0 B (0)
+        Live bytes committed: 0 B (0)
+      1 page(s):
+        Total number of allocs seen: 1425
+        Live allocations: 0
+        Accumulated bytes requested: 2.78 GiB (2988441600)
+        Accumulated bytes committed: 2.78 GiB (2988441600)
+        Live bytes requested: 0 B (0)
+        Live bytes committed: 0 B (0)
+      15 page(s):
+        Total number of allocs seen: 1
+        Live allocations: 0
+        Accumulated bytes requested: 64.0 MiB (67108864)
+        Accumulated bytes committed: 64.0 MiB (67108864)
+        Live bytes requested: 0 B (0)
+        Live bytes committed: 0 B (0)
+
+..
+
+  NOTE: The compound page stats from above were captured immediately after
+  running the CPA tests (as described below) on Juno platform.
+
+
+
+.. Add blank line before section header
+|
+
+CPA Tests (3.18 Linux Kernel)
+=============================
+
+There are two primary tests provided for CPA:
+
+* Basic test
+* Fragmentation problem test
+
+
+**Basic test:**
+
+This is a standalone user-space test to allocate compound pages through ION
+with mask ``ION_HEAP_TYPE_COMPOUND_PAGE_MASK``. CPA allocations vary in size
+and it's important to confirm that each allocation is fulfilled by the
+ION CPA heap and that each 2MB granule is physically contiguous. All allocations
+are passed to the kernel module to verify that the large page size is 2MB.
+Furthermore, it's necessary to ensure that CPA fails to allocate memory
+gracefully when system memory is exhausted. It's possible to check for errors
+(such as process hang, kernel panic, etc.) in this situation. Android low memory
+killer should be disabled during this test to ensure that the system doesn't
+try and free memory during the test.
+
+  NOTE: Page order in ``ion_cpa_platform_data`` must be set to ``9`` for this
+  test (which expects 2MB pages, 4kB * 2^9) or the kernel module updated to
+  match expected page order.
+
+
+**Fragment problem test:**
+
+This test validates that CPA behaves correctly when the system memory is heavily
+fragmented. CPA might fail to allocate large pages even if there is enough
+system memory free.
+
+
+*Test steps:*
+
+1. Test kernel module implements a function to force memory system get into
+   fragment situation by allocating and freeing pages.
+
+2. User space then attempts 200 times to allocate 2MB pages through CPA.
+   The test then records how many allocations failed. This shall be referred to
+   as ``t1``.
+
+3. The test then attempts to free 200 page units we hold in test kernel
+   module.
+
+4. Step 2 is then repeated as the tests attempts to allocate 2MB pages 200
+   times, then records how many allocations failed, this shall be referred to as
+   ``t2``.
+
+5. The test compares the failed times ``t1&t2``. If ``t2`` is less than ``t1``,
+   CPA was affected by fragmentation problem in step 2.
+
+
+
+.. Add blank line before section header
+|
+
+Building Tests
+--------------
+
+CPA test code contains two parts:
+
+* User-space native application
+* Kernel-space module
+
+Compile Android native user-space application as follows:
+
+.. code-block:: bash
+
+    # Setup Android build environment
+    cd <path-to-android-tree>
+    source build/envsetup.sh
+    lunch <lunch-combo>
+
+    # Link to CPA Tests user code
+    mkdir -p <path-to-android-tree>/vendor/<vendor>/
+    ln -sf <path-to-cpa-tests>/test/user <path-to-android-tree>/vendor/<vendor>/cpa-test-user
+
+    # Build user-space application
+    cd <path-to-android-tree>/vendor/<vendor>/cpa-test-user
+    mm
+
+``test_cpa_user`` will be generated in
+*<path-to-android-tree>/out/target/product/<device-name>/system/bin/*
+
+Compile Kernel space module with:
+
+.. code-block:: bash
+
+    export CROSS_COMPILE=<path-to-compiler>
+    export ARCH=<arch>
+    export KDIR=<path-to-kernel>
+    cd <path-to-cpa-tests>/test/kernel
+    make
+
+where, for example:
+
+- ``<arch>``: ``arm`` or ``arm64``
+- ``<path-to-compiler>``: ``<path-to-aarch64-gcc>/bin/aarch64-linux-gnu-`` for
+  64-bit Arm
+
+
+``test_cpa_kernel.ko`` will be generated in current directory.
+
+
+
+.. Add blank line before section header
+|
+
+Running Tests
+-------------
+In order to achieve consistent results the following should be taken into
+account:
+
+    NOTE: Low Memory Killer should be disabled for all the tests. This can be
+    done through disabling kernel configuration option
+    ``CONFIG_ANDROID_LOW_MEMORY_KILLER``.
+
+..
+
+    NOTE: In order to achieve consistent results the CPA page pool mechanism
+    should be disabled by setting lowmark, highmark and fillmark in struct
+    ``ion_cpa_platform_data`` to 0. The configuration should be like as
+    following:
+
+    .. code-block:: c
+
+       struct ion_cpa_platform_data cpa_config = {
+                   .lowmark = 0,
+                   .highmark = 0,
+                   .fillmark = 0,
+                   .align_order = 0,
+                   .order = 9
+       };
+
+
+..
+
+    NOTE: Before running ``test_cpa_user``, it's recommended to stop all Android
+    user-space services by executing ``stop`` command from the Android shell.
+    This eliminates any dynamic effect of the Android system.
+
+1. Copy user-space application and kernel module to Android system:
+
+   .. code-block:: none
+
+      adb push <path-to-android-tree>/out/target/product/<device-name>/system/bin/test_cpa_user /system/bin/
+      adb push <path-to-cpa-tests>/test/kernel/test_cpa_kernel.ko <path-to-module>/
+
+2. Insert kernel module:
+
+   .. code-block:: none
+
+      insmod <path-to-module>/test_cpa_kernel.ko
+
+3. Run application:
+
+   .. code-block:: none
+
+      test_cpa_user
+
+
+
+Example console output:
+
+.. code-block:: none
+
+    root@juno:/ # test_cpa_user
+    CPA test start!!!
+
+    ===================Test 1 START===================.
+    1. Verify CPA, Alloc 1KB from CPA success.Verify CPA memory success.
+    2. Verify CPA, Alloc 1024KB from CPA success.Verify CPA memory success.
+    3. Verify CPA, Alloc 2048KB from CPA success.Verify CPA memory success.
+    4. Verify CPA, Alloc 2031KB from CPA success.Verify CPA memory success.
+    5. Verify CPA, Alloc 65536KB from CPA success.Verify CPA memory success.
+    6. Try to allocate from CPA until system mem exhausts.
+        >>> Successfully exhausted system memory and no error happened.
+
+    ===================Test 1 END===================.
+
+
+
+    ===================Test 2 START===================.
+    Start to simulate memory fragment in test-cpa module.
+        >>> After simulate memory fragment, system free memory: 5979 MB, test allocated memory: 589 MB.
+        >>> System is in 2MB memory fragment situation.
+
+        >>> Try to allocate 2MB physical contiguous memory from CPA for 200 times.
+            >>> Failed 194 times. 12MB memory allocated.
+
+        >>> Try to free 3200 KB pages in test-cpa module.
+      >>> After free some tests allocated page, system free memory: 6027 MB, test allocated memory: 577 MB.
+
+        >>> Try to allocate 2MB physical contiguous memory from CPA for 200 times.
+            >>> Failed 0 times.400 MB memory allocated.
+
+        >>> Expected result: CPA is affected by memory fragment problem.
+    Stop to simulate memory fragment in test-cpa module.
+
+    ===================Test 2 END===================.
+    CPA test end!!!
+
+
+
+
+.. Add blank line before section
+|
+
+
+.. Add blank line before section header
+|
+
+License
+=======
+
+This project is licensed under GPL-2.0.
+
+
+.. Add blank line before section header
+|
+
+Contributions / Pull Requests
+=============================
+
+Contributions are accepted under GPL-2.0. Only submit contributions where you
+have authored all of the code. Ensure that your employer, where applicable,
+consents.

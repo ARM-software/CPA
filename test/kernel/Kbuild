@@ -1,0 +1,3 @@
+test-cpa-y += test_cpa_kernel.o
+obj-$(CONFIG_TEST_CPA) += test_cpa_kernel.o
+
